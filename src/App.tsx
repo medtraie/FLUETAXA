@@ -150,7 +150,7 @@ export default function App() {
             <div className="w-16 h-16 bg-[#0ea5e9]/10 rounded-full flex items-center justify-center mx-auto mb-4">
               <Fuel className="w-8 h-8 text-[#0ea5e9]" />
             </div>
-            <h1 className="text-2xl font-bold text-white">SmartFuel</h1>
+            <h1 className="text-2xl font-bold text-white">ParcGps</h1>
             <p className="text-slate-400 text-sm">Système de Gestion de Carburant</p>
           </div>
 
@@ -236,7 +236,7 @@ export default function App() {
           <div className="w-8 h-8 bg-[#0ea5e9] rounded-lg flex items-center justify-center">
             <Fuel className="w-5 h-5 text-white" />
           </div>
-          <span className="text-xl font-bold text-white tracking-tight">SmartFuel</span>
+          <span className="text-xl font-bold text-white tracking-tight">ParcGps</span>
         </div>
         
         <nav className="p-4 space-y-2">
