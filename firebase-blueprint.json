@@ -1,0 +1,107 @@
+{
+  "entities": {
+    "Tank": {
+      "title": "Tank",
+      "description": "Fuel storage tank",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "site": { "type": "string" },
+        "fuelType": { "type": "string", "enum": ["gasoil", "essence"] },
+        "capacity": { "type": "number" },
+        "currentLevel": { "type": "number" },
+        "lastUpdated": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "site", "fuelType", "capacity", "currentLevel"]
+    },
+    "FuelSupply": {
+      "title": "Fuel Supply",
+      "description": "Recording of fuel tank replenishment",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "format": "date-time" },
+        "quantity": { "type": "number" },
+        "supplier": { "type": "string" },
+        "site": { "type": "string" },
+        "fuelType": { "type": "string" },
+        "tankId": { "type": "string" }
+      },
+      "required": ["date", "quantity", "supplier", "site", "fuelType", "tankId"]
+    },
+    "FuelUsage": {
+      "title": "Fuel Usage",
+      "description": "Recording of fuel consumption by a vehicle",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "format": "date-time" },
+        "quantity": { "type": "number" },
+        "agentId": { "type": "string" },
+        "agentName": { "type": "string" },
+        "vehicleId": { "type": "string" },
+        "chassisNumber": { "type": "string" },
+        "site": { "type": "string" },
+        "fuelType": { "type": "string" },
+        "mileage": { "type": "number" }
+      },
+      "required": ["date", "quantity", "agentId", "vehicleId", "chassisNumber", "site", "fuelType"]
+    },
+    "Vehicle": {
+      "title": "Vehicle",
+      "description": "Vehicle in the fleet",
+      "type": "object",
+      "properties": {
+        "chassisNumber": { "type": "string" },
+        "brand": { "type": "string", "enum": ["Skoda", "Volkswagen", "Seat", "Cupra", "Audi", "Porsche", "Bentley", "Autre"] },
+        "addedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["chassisNumber", "brand"]
+    },
+    "Agent": {
+      "title": "Agent",
+      "description": "System user/agent",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "firstName": { "type": "string" },
+        "lastName": { "type": "string" },
+        "role": { "type": "string", "enum": ["admin", "agent"] },
+        "status": { "type": "string", "enum": ["active", "suspended"] },
+        "permissions": {
+          "type": "object",
+          "properties": {
+            "sites": { "type": "array", "items": { "type": "string" } },
+            "fuelTypes": { "type": "array", "items": { "type": "string" } },
+            "brands": { "type": "array", "items": { "type": "string" } },
+            "allowUnregisteredChassis": { "type": "boolean" },
+            "monthlyLimit": { "type": "number" },
+            "fillLimit": { "type": "number" }
+          }
+        }
+      },
+      "required": ["uid", "firstName", "lastName", "role", "status"]
+    }
+  },
+  "firestore": {
+    "/tanks/{tankId}": {
+      "schema": "Tank",
+      "description": "Fuel tanks"
+    },
+    "/fuel_supplies/{supplyId}": {
+      "schema": "FuelSupply",
+      "description": "Fuel supply logs"
+    },
+    "/fuel_usages/{usageId}": {
+      "schema": "FuelUsage",
+      "description": "Fuel usage logs"
+    },
+    "/vehicles/{chassisNumber}": {
+      "schema": "Vehicle",
+      "description": "Vehicles fleet"
+    },
+    "/agents/{uid}": {
+      "schema": "Agent",
+      "description": "Agents registry"
+    }
+  }
+}

@@ -1,0 +1,99 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: tanks
+    // Fields: id, name, site, fuelType, capacity, currentLevel, lastUpdated
+    //
+    // Collection: fuel_supplies
+    // Fields: date, quantity, supplier, site, fuelType, tankId
+    //
+    // Collection: fuel_usages
+    // Fields: date, quantity, agentId, agentName, vehicleId, chassisNumber, site, fuelType, mileage
+    //
+    // Collection: vehicles
+    // Fields: chassisNumber, brand, addedAt
+    //
+    // Collection: agents
+    // Fields: uid, firstName, lastName, role, status, permissions
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/agents/$(request.auth.uid)).data.role == 'admin' ||
+         (request.auth.token.email == "medoraelis93@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function isAgent() {
+      return isAuthenticated() && 
+        get(/databases/$(database)/documents/agents/$(request.auth.uid)).data.status == 'active';
+    }
+
+    function hasPermission(site, fuelType, brand) {
+      let agentData = get(/databases/$(database)/documents/agents/$(request.auth.uid)).data;
+      return isAdmin() || (
+        agentData.status == 'active' &&
+        site in agentData.permissions.sites &&
+        fuelType in agentData.permissions.fuelTypes &&
+        (brand == null || brand in agentData.permissions.brands || agentData.permissions.allowUnregisteredChassis == true)
+      );
+    }
+
+    function isValidTank(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
+             data.site is string &&
+             data.fuelType in ['gasoil', 'essence'] &&
+             data.capacity is number && data.capacity > 0 &&
+             data.currentLevel is number && data.currentLevel >= 0 && data.currentLevel <= data.capacity;
+    }
+
+    function isValidAgent(data) {
+      return data.firstName is string && data.firstName.size() > 0 &&
+             data.lastName is string && data.lastName.size() > 0 &&
+             data.role in ['admin', 'agent'] &&
+             data.status in ['active', 'suspended'] &&
+             data.permissions is map;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /tanks/{tankId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+      // Allow agents to update level when using fuel
+      allow update: if isAuthenticated() && 
+                    request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentLevel', 'lastUpdated']) &&
+                    request.resource.data.currentLevel >= 0;
+    }
+
+    match /fuel_supplies/{supplyId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin();
+    }
+
+    match /fuel_usages/{usageId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && hasPermission(request.resource.data.site, request.resource.data.fuelType, null);
+    }
+
+    match /vehicles/{chassisNumber} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /agents/{uid} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+  }
+}
