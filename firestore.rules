@@ -1,0 +1,114 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    // Collection: tanks
+    // Fields: id, name, site, fuelType, capacity, currentLevel, lastUpdated
+    //
+    // Collection: fuel_supplies
+    // Fields: date, quantity, supplier, site, fuelType, tankId
+    //
+    // Collection: fuel_usages
+    // Fields: date, quantity, agentId, agentName, vehicleId, chassisNumber, site, fuelType, mileage
+    //
+    // Collection: vehicles
+    // Fields: chassisNumber, brand, addedAt
+    //
+    // Collection: agents
+    // Fields: uid, firstName, lastName, role, status, permissions
+
+    // ===============================================================
+    // Global Safety Net
+    // ===============================================================
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && (
+        (exists(/databases/$(database)/documents/agents/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/agents/$(request.auth.uid)).data.role == 'admin') ||
+        (request.auth.token.email == "medoraelis93@gmail.com" && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isAgentActive() {
+      return isAuthenticated() && 
+             exists(/databases/$(database)/documents/agents/$(request.auth.uid)) &&
+             get(/databases/$(database)/documents/agents/$(request.auth.uid)).data.status == 'active';
+    }
+
+    function hasPermission(site, fuelType, brand) {
+      return isAdmin() || (
+        isAgentActive() &&
+        site in get(/databases/$(database)/documents/agents/$(request.auth.uid)).data.permissions.sites &&
+        fuelType in get(/databases/$(database)/documents/agents/$(request.auth.uid)).data.permissions.fuelTypes &&
+        (brand == null || brand in get(/databases/$(database)/documents/agents/$(request.auth.uid)).data.permissions.brands || 
+         get(/databases/$(database)/documents/agents/$(request.auth.uid)).data.permissions.allowUnregisteredChassis == true)
+      );
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /tanks/{tankId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+      allow update: if isAuthenticated() && 
+                    incoming().diff(existing()).affectedKeys().hasOnly(['currentLevel', 'lastUpdated']) &&
+                    incoming().currentLevel >= 0;
+    }
+
+    match /fuel_supplies/{supplyId} {
+      allow read: if isAdmin();
+      allow create: if isAdmin();
+    }
+
+    match /fuel_usages/{usageId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated() && hasPermission(incoming().site, incoming().fuelType, null);
+    }
+
+    match /vehicles/{chassisNumber} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /agents/{uid} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /vehicle_groups/{groupId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    match /vouchers/{voucherId} {
+      allow read: if isAuthenticated();
+      allow create, delete: if isAdmin();
+      allow update: if isAuthenticated() && (
+        isAdmin() || 
+        (incoming().diff(existing()).affectedKeys().hasOnly(['status', 'usedAt', 'usedBy']))
+      );
+    }
+  }
+}
