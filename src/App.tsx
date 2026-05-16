@@ -136,8 +136,9 @@ export default function App() {
     const provider = new GoogleAuthProvider();
     try {
       await signInWithPopup(auth, provider);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Login failed", error);
+      alert("Erreur de connexion: " + (error.message || "Erreur inconnue"));
     }
   };
 
