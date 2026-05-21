@@ -117,7 +117,7 @@
         "liters": { "type": "number" },
         "authorizedVehicleIds": { "type": "array", "items": { "type": "string" } },
         "isOpen": { "type": "boolean" },
-        "validity": { "type": "string", "enum": ["1_month", "2_months", "1_year", "unlimited"] },
+        "validity": { "type": "string", "enum": ["1_month", "3_months", "1_year", "unlimited"] },
         "expirationDate": { "type": "string", "format": "date-time" },
         "isSellable": { "type": "boolean" },
         "status": { "type": "string", "enum": ["created", "used", "expired", "valid_unused", "suspended"] },

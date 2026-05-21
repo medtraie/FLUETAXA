@@ -1,7 +1,1 @@
-{
-  "name": "Parcgps- Système de Gestion de Carburant",
-  "description": "Plateforme intelligente de gestion de flotte et de suivi de consommation de carburant en temps réel.",
-  "requestFramePermissions": [
-    "camera"
-  ]
-}
+{"name":"Parcgps- Système de Gestion de Carburant","description":"Plateforme intelligente de gestion de flotte et de suivi de consommation de carburant en temps réel.","requestFramePermissions":["camera"]}

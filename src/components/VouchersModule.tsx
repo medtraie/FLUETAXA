@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../firebase';
 import { collection, onSnapshot, doc, setDoc, deleteDoc, query, orderBy, updateDoc, writeBatch } from 'firebase/firestore';
-import { Voucher, VoucherStatus, VoucherValidity, FuelType, Vehicle, VehicleGroup } from '../types';
+import { Voucher, VoucherStatus, VoucherValidity, FuelType, Vehicle, VehicleGroup, Agent } from '../types';
 import { Ticket, Plus, Search, Filter, Archive, CheckCircle2, AlertCircle, Clock, Ban, Trash2, Copy, Download, QrCode, Building2, Droplets, Car, X, Layers, CheckSquare, Square, Check, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import QRCode from 'react-qr-code';
 import { handleFirestoreError, OperationType } from '../lib/firestoreUtils';
+import { jsPDF } from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 const VALIDITY_OPTIONS: { label: string; value: VoucherValidity }[] = [
   { label: '1 Mois', value: '1_month' },
-  { label: '2 Mois', value: '2_months' },
+  { label: '3 Mois', value: '3_months' },
   { label: '1 An', value: '1_year' },
   { label: 'Illimitée', value: 'unlimited' }
 ];
@@ -17,10 +19,32 @@ const VALIDITY_OPTIONS: { label: string; value: VoucherValidity }[] = [
 const FUEL_TYPES: FuelType[] = ['gasoil', 'essence'];
 const SITES = ['Site 1', 'Site 2'];
 
+const getNextVoucherCode = (liters: number, existingVouchers: Voucher[]) => {
+  let prefix = '15';
+  if (liters === 15) prefix = '15';
+  else if (liters === 20) prefix = '20';
+  else if (liters === 30) prefix = '30';
+  else prefix = String(liters).padStart(2, '0');
+
+  const regex = new RegExp(`^${prefix}\\d{5}$`);
+  const matchingCodes = existingVouchers
+    .map(v => v.code)
+    .filter(code => regex.test(code))
+    .map(code => parseInt(code, 10));
+
+  if (matchingCodes.length === 0) {
+    return `${prefix}00001`;
+  }
+
+  const maxCode = Math.max(...matchingCodes);
+  return String(maxCode + 1);
+};
+
 export default function VouchersModule() {
   const [vouchers, setVouchers] = useState<Voucher[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [vehicleGroups, setVehicleGroups] = useState<VehicleGroup[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<VoucherStatus | 'all'>('all');
@@ -28,7 +52,7 @@ export default function VouchersModule() {
 
   // Form State
   const [formData, setFormData] = useState({
-    liters: 0,
+    liters: 15,
     validity: '1_month' as VoucherValidity,
     isSellable: false,
     fuelTypes: [] as FuelType[],
@@ -52,10 +76,15 @@ export default function VouchersModule() {
       setVehicleGroups(snap.docs.map(doc => doc.data() as VehicleGroup));
     }, (err) => handleFirestoreError(err, OperationType.GET, 'vehicle_groups'));
 
+    const unsubAgents = onSnapshot(collection(db, 'agents'), (snap) => {
+      setAgents(snap.docs.map(doc => doc.data() as Agent));
+    }, (err) => handleFirestoreError(err, OperationType.GET, 'agents'));
+
     return () => {
       unsubVouchers();
       unsubVehicles();
       unsubGroups();
+      unsubAgents();
     };
   }, []);
 
@@ -63,9 +92,11 @@ export default function VouchersModule() {
     e.preventDefault();
     const batch = writeBatch(db);
     
+    const startCode = getNextVoucherCode(formData.liters, vouchers);
+    
     for (let i = 0; i < formData.quantity; i++) {
       const id = crypto.randomUUID();
-      const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+      const code = String(parseInt(startCode, 10) + i);
       const expirationDate = calculateExpiry(formData.validity);
       
       const voucher: Voucher = {
@@ -94,7 +125,7 @@ export default function VouchersModule() {
       await batch.commit();
       setShowAddModal(false);
       setFormData({
-        liters: 0,
+        liters: 15,
         validity: '1_month',
         isSellable: false,
         fuelTypes: [],
@@ -112,7 +143,7 @@ export default function VouchersModule() {
     if (validity === 'unlimited') return null;
     const date = new Date();
     if (validity === '1_month') date.setMonth(date.getMonth() + 1);
-    if (validity === '2_months') date.setMonth(date.getMonth() + 2);
+    if (validity === '3_months') date.setMonth(date.getMonth() + 3);
     if (validity === '1_year') date.setFullYear(date.getFullYear() + 1);
     return date;
   };
@@ -137,7 +168,7 @@ export default function VouchersModule() {
 
   const handleDuplicate = async (voucher: Voucher) => {
     const id = crypto.randomUUID();
-    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+    const code = getNextVoucherCode(voucher.liters, vouchers);
     
     // Create copy without usage information
     const { usedAt, usedBy, ...baseVoucher } = voucher;
@@ -156,6 +187,218 @@ export default function VouchersModule() {
     } catch (error) {
       console.error("Duplicate failed", error);
     }
+  };
+
+  const downloadVoucherPDF = (voucher: Voucher) => {
+    const doc = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4'
+    });
+
+    const primaryColor = [14, 165, 233]; // #0ea5e9
+    const secondaryColor = [30, 41, 59]; // #1e293b
+    const textDark = [15, 23, 42]; // Slate 900
+    const textMedium = [71, 85, 105]; // Slate 600
+    const lightGrey = [248, 250, 252]; // Slate 50
+    const borderGrey = [226, 232, 240]; // Slate 200
+
+    // Title / Header Background Bar
+    doc.setFillColor(30, 41, 59);
+    doc.rect(0, 0, 210, 38, 'F');
+
+    doc.setFillColor(14, 165, 233);
+    doc.rect(0, 38, 210, 2, 'F');
+
+    // Branding / Info
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.setTextColor(255, 255, 255);
+    doc.text('SmartFuel Fleet Manager', 15, 16);
+
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(186, 230, 253);
+    doc.text('RAPPORT TECHNIQUE DE SUIVI ET CONTROLE DE BON', 15, 22);
+
+    // Document timestamp
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(255, 255, 255);
+    doc.text(`Généré le: ${new Date().toLocaleString('fr-FR')}`, 195, 16, { align: 'right' });
+    doc.text('Statut du document: Officiel & Signé', 195, 22, { align: 'right' });
+
+    // Card frame for the QR & Liters info
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(226, 232, 240);
+    doc.setLineWidth(0.5);
+    doc.roundedRect(14, 46, 182, 34, 4, 4, 'FD');
+
+    // Secure stamp drawing instead of SVG qr generator to make sure compiled binary has zero external runtime issues
+    doc.setDrawColor(14, 165, 233);
+    doc.setLineWidth(0.8);
+    doc.roundedRect(20, 50, 26, 26, 1, 1, 'D');
+    
+    // Draw secure tech grid inside Stamp
+    doc.setFillColor(241, 245, 249);
+    doc.rect(21, 51, 24, 24, 'F');
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(14, 165, 233);
+    doc.text('SECURE', 33, 60, { align: 'center' });
+    doc.setFontSize(7);
+    doc.setTextColor(30, 41, 59);
+    doc.text('QR-VERIFIED', 33, 65, { align: 'center' });
+    doc.setTextColor(71, 85, 105);
+    doc.text(voucher.code, 33, 71, { align: 'center' });
+
+    // Details in the frame card
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(115, 115, 115);
+    doc.text('RÉFÉRENCE DU BON (CODE QR):', 54, 55);
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.setTextColor(30, 41, 59);
+    doc.text(voucher.code, 54, 62);
+
+    doc.setFont('Helvetica', 'normal');
+    doc.setFontSize(9);
+    doc.setTextColor(115, 115, 115);
+    doc.text('DOTATION CARBURANT INITIALE:', 54, 70);
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(12);
+    doc.setTextColor(14, 165, 233);
+    doc.text(`${voucher.liters} LITRES DE CARBURANT`, 54, 76);
+
+    // Large solde display on right
+    doc.setFillColor(224, 242, 254);
+    doc.roundedRect(138, 50, 52, 26, 2, 2, 'F');
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(3, 105, 161);
+    doc.text('QUANTITÉ RESTANTE', 164, 57, { align: 'center' });
+    doc.setFontSize(22);
+    const solde = voucher.status === 'used' ? 0 : voucher.liters;
+    doc.text(`${solde} L`, 164, 68, { align: 'center' });
+
+    // Add sections
+    let currentY = 90;
+
+    // Table 1: Detailed Specifications
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(30, 41, 59);
+    doc.text('1. SPÉCIFICATIONS ET RESTRICTIONS D\'ACCÈS', 14, currentY);
+    currentY += 4;
+
+    const specColumns = ['Spécification / Paramètre', 'Configuration et Restrictions'];
+    const formattedExpiry = voucher.expirationDate 
+      ? new Date(voucher.expirationDate).toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric' })
+      : 'Illimitée (Pas d\'expiration)';
+    
+    const formattedCreation = new Date(voucher.creationDate || voucher.createdAt).toLocaleString('fr-FR', {
+      day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit'
+    });
+
+    const specRows = [
+      ['Réf / Code à barres', voucher.code],
+      ['Volume Original Émis', `${voucher.liters} Litres`],
+      ['Types de Carburant Valides', voucher.fuelTypes && voucher.fuelTypes.length > 0 ? voucher.fuelTypes.map(f => f.toUpperCase()).join(' / ') : 'Toutes (Gasoil & Essence)'],
+      ['Sites de Distribution Valides', voucher.sites && voucher.sites.length > 0 ? voucher.sites.join(', ') : 'Tous Sites (Site 1 & Site 2)'],
+      ['Restreint aux Véhicules', voucher.isOpen ? 'Mode Ouvert (Tout véhicule)' : `${voucher.authorizedVehicleIds ? voucher.authorizedVehicleIds.length : 0} Véhicule(s) spécifique(s) pré-approuvé(s)`],
+      ['Option de vente', voucher.isSellable ? 'Compte commercial Échangeable / Vendable' : 'Usage de flotte interne strict'],
+      ['Date d\'Émission initiale', formattedCreation]
+    ];
+
+    autoTable(doc, {
+      head: [specColumns],
+      body: specRows,
+      startY: currentY,
+      theme: 'striped',
+      headStyles: { fillColor: [30, 41, 59], textColor: [255, 255, 255], fontStyle: 'bold' },
+      styles: { fontSize: 8.5, cellPadding: 2.5 },
+      columnStyles: {
+        0: { cellWidth: 60, fontStyle: 'bold', textColor: [71, 85, 105] },
+        1: { cellWidth: 122 }
+      }
+    });
+
+    currentY = (doc as any).lastAutoTable.finalY + 8;
+
+    // Table 2: Status & Tracking
+    doc.setFont('Helvetica', 'bold');
+    doc.setFontSize(11);
+    doc.setTextColor(30, 41, 59);
+    doc.text('2. ÉTAT DE CONSOMMATION & TRACABILITÉ EN TEMPS RÉEL', 14, currentY);
+    currentY += 4;
+
+    const statusColumns = ['Indicateur Administratif', 'Résultat et Informations de Suivi'];
+    
+    // Status translation label
+    let statusFr = 'Créé (Valide, prêt à l\'usage)';
+    if (voucher.status === 'used') statusFr = 'Utilisé (Entièrement consommé ou déchargé)';
+    else if (voucher.status === 'expired') statusFr = 'Expiré (Durée de validité dépassée)';
+    else if (voucher.status === 'suspended') statusFr = 'Suspendu (Désactivé temporairement)';
+    else if (voucher.status === 'valid_unused') statusFr = 'Valide non utilisé';
+
+    const consumedVol = voucher.status === 'used' ? voucher.liters : 0;
+    const remainingVol = voucher.status === 'used' ? 0 : voucher.liters;
+
+    // Find agent if consumed
+    const matchedAgent = agents.find(a => a.uid === voucher.usedBy);
+    const agentFullName = matchedAgent ? `${matchedAgent.firstName} ${matchedAgent.lastName}` : (voucher.usedBy || 'Disponible / Non attribué');
+
+    const lastUpdatedDate = voucher.status === 'used' && voucher.usedAt 
+      ? new Date(voucher.usedAt).toLocaleString('fr-FR')
+      : new Date(voucher.createdAt).toLocaleString('fr-FR');
+
+    const trackingRows = [
+      ['Statut Actuel', statusFr],
+      ['Date Limite de Validité', formattedExpiry],
+      ['Quantité Consommée', `${consumedVol} Litres`],
+      ['Quantité Résiduelle / Restante', `${remainingVol} Litres`],
+      ['Dernière Synchronisation (أخر mise a jours)', lastUpdatedDate]
+    ];
+
+    if (voucher.status === 'used') {
+      trackingRows.push(['Consommé par (Agent/Chauffeur)', agentFullName]);
+      trackingRows.push(['Date exact d\'utilisation', voucher.usedAt ? new Date(voucher.usedAt).toLocaleString('fr-FR') : 'Inconnue']);
+    }
+
+    autoTable(doc, {
+      head: [statusColumns],
+      body: trackingRows,
+      startY: currentY,
+      theme: 'grid',
+      headStyles: { fillColor: [14, 165, 233], textColor: [255, 255, 255], fontStyle: 'bold' },
+      styles: { fontSize: 8.5, cellPadding: 2.5 },
+      columnStyles: {
+        0: { cellWidth: 60, fontStyle: 'bold', textColor: [71, 85, 105] },
+        1: { cellWidth: 122 }
+      }
+    });
+
+    currentY = (doc as any).lastAutoTable.finalY + 10;
+
+    // Draw stylish cutting design
+    doc.setLineDashPattern([2, 2], 0);
+    doc.setDrawColor(148, 163, 184);
+    doc.setLineWidth(0.3);
+    doc.line(10, currentY, 200, currentY);
+    doc.setLineDashPattern([], 0);
+
+    currentY += 5;
+
+    // Security Disclaimer bottom footer
+    doc.setFont('Helvetica', 'italic');
+    doc.setFontSize(7.5);
+    doc.setTextColor(148, 163, 184);
+    doc.text('Ce rapport de suivi carburant est une pièce officielle certifiée par SmartFuel.', 105, currentY, { align: 'center' });
+    doc.text('Toute modification frauduleuse de ce bon expose son auteur à des poursuites administratives.', 105, currentY + 3.5, { align: 'center' });
+
+    // Save PDF
+    doc.save(`Rapport_Détails_Bon_${voucher.code}.pdf`);
   };
 
   const filteredVouchers = vouchers.filter(v => {
@@ -303,6 +546,14 @@ export default function VouchersModule() {
                     <span className="text-xs font-bold">COPIER</span>
                   </button>
                   <button 
+                    type="button"
+                    onClick={() => downloadVoucherPDF(voucher)}
+                    className="p-2.5 rounded-xl bg-[#0ea5e9]/10 border border-[#0ea5e9]/20 text-[#0ea5e9] hover:bg-[#0ea5e9]/20 transition-all"
+                    title="Télécharger le Rapport PDF Détaillé"
+                  >
+                    <Download className="w-4 h-4" />
+                  </button>
+                  <button 
                     onClick={() => toggleStatus(voucher.id, voucher.status)}
                     className={`p-2.5 rounded-xl transition-all border ${voucher.status === 'suspended' ? 'bg-emerald-400/10 border-emerald-400/20 text-emerald-400' : 'bg-amber-400/10 border-amber-400/20 text-amber-400'}`}
                   >
@@ -397,14 +648,18 @@ export default function VouchersModule() {
                       <div className="grid grid-cols-2 gap-4">
                         <div>
                           <label className="block text-sm font-medium text-slate-400 mb-1.5">Volume (Litre)</label>
-                          <input 
-                            type="number" 
-                            required
-                            min="1"
-                            value={formData.liters}
-                            onChange={(e) => setFormData({...formData, liters: Number(e.target.value)})}
-                            className="w-full bg-[#0f172a] border border-white/10 rounded-xl px-4 py-3 text-white focus:outline-none focus:border-[#0ea5e9]"
-                          />
+                          <div className="grid grid-cols-3 gap-1 p-1 bg-[#0f172a] rounded-xl border border-white/10 h-[48px] items-center">
+                            {[15, 20, 30].map(vol => (
+                              <button
+                                key={vol}
+                                type="button"
+                                onClick={() => setFormData({...formData, liters: vol})}
+                                className={`h-8 rounded-lg text-xs font-bold transition-all ${formData.liters === vol ? 'bg-[#0ea5e9] text-white shadow-md' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}
+                              >
+                                {vol}L
+                              </button>
+                            ))}
+                          </div>
                         </div>
                         <div>
                           <label className="block text-sm font-medium text-slate-400 mb-1.5">Quantité à créer</label>

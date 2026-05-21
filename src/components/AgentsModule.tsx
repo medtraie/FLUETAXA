@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { db, secondaryAuth } from '../firebase';
-import { collection, onSnapshot, doc, updateDoc, query, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, query, orderBy, deleteDoc } from 'firebase/firestore';
 import { Agent, FuelType, Brand, VehicleGroup, Vehicle } from '../types';
-import { Users, Shield, UserMinus, UserCheck, Edit2, X, Check, Plus, Trash2, Smartphone, Layers, Car, Ban } from 'lucide-react';
+import { Users, Shield, UserMinus, UserCheck, Edit2, X, Check, Plus, Trash2, Smartphone, Layers, Car, Ban, Search } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { setDoc, deleteField } from 'firebase/firestore';
 import { createUserWithEmailAndPassword } from 'firebase/auth';
@@ -22,6 +22,10 @@ export default function AgentsModule() {
   const [isCreating, setIsCreating] = useState(false);
   const [createError, setCreateError] = useState('');
   const [resetConfirmId, setResetConfirmId] = useState<string | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [roleFilter, setRoleFilter] = useState<'all' | 'admin' | 'agent'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'active' | 'suspended'>('all');
   const [newAgentData, setNewAgentData] = useState<Partial<Agent>>({
     firstName: '',
     lastName: '',
@@ -172,6 +176,24 @@ export default function AgentsModule() {
     }
   };
 
+  const handleDeleteAgent = async (agentId: string) => {
+    try {
+      await deleteDoc(doc(db, 'agents', agentId));
+      setDeleteConfirmId(null);
+      setShowEditModal(false);
+    } catch (error) {
+      console.error("Delete agent failed", error);
+    }
+  };
+
+  const filteredAgents = agents.filter(agent => {
+    const searchString = `${agent.firstName} ${agent.lastName} ${agent.uid}`.toLowerCase();
+    const matchesSearch = searchString.includes(searchTerm.toLowerCase());
+    const matchesRole = roleFilter === 'all' || agent.role === roleFilter;
+    const matchesStatus = statusFilter === 'all' || agent.status === statusFilter;
+    return matchesSearch && matchesRole && matchesStatus;
+  });
+
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-center">
@@ -188,6 +210,67 @@ export default function AgentsModule() {
         </button>
       </div>
 
+      <div className="flex flex-col md:flex-row gap-4 items-center">
+        {/* Search Input */}
+        <div className="relative flex-1 w-full">
+          <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+          <input 
+            type="text"
+            placeholder="Rechercher un agent par nom, prénom ou ID..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full bg-[#1e293b] border border-white/5 rounded-xl pl-12 pr-4 py-3 text-white focus:outline-none focus:border-[#0ea5e9]"
+          />
+        </div>
+
+        {/* Filters Group */}
+        <div className="flex flex-wrap md:flex-nowrap gap-3 w-full md:w-auto">
+          {/* Role Filter */}
+          <div className="flex gap-1 p-1 bg-[#1e293b] rounded-xl border border-white/5 whitespace-nowrap overflow-x-auto custom-scrollbar">
+            {([
+              { id: 'all', label: 'Tous les rôles' },
+              { id: 'agent', label: 'Agents' },
+              { id: 'admin', label: 'Admins' }
+            ] as const).map(f => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setRoleFilter(f.id)}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+                  roleFilter === f.id
+                    ? 'bg-[#0ea5e9] text-white shadow-md shadow-[#0ea5e9]/10'
+                    : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Status Filter */}
+          <div className="flex gap-1 p-1 bg-[#1e293b] rounded-xl border border-white/5 whitespace-nowrap overflow-x-auto custom-scrollbar">
+            {([
+              { id: 'all', label: 'Tous les statuts' },
+              { id: 'active', label: 'Actifs' },
+              { id: 'suspended', label: 'Suspendus' }
+            ] as const).map(f => (
+              <button
+                key={f.id}
+                type="button"
+                onClick={() => setStatusFilter(f.id)}
+                className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+                  statusFilter === f.id
+                    ? 'bg-[#0ea5e9] text-white shadow-md shadow-[#0ea5e9]/10'
+                    : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
       <div className="bg-[#1e293b] rounded-2xl border border-white/5 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left">
@@ -200,7 +283,7 @@ export default function AgentsModule() {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
-              {agents.map((agent) => (
+              {filteredAgents.map((agent) => (
                 <tr key={agent.uid} className="hover:bg-white/5 transition-colors">
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
@@ -263,6 +346,23 @@ export default function AgentsModule() {
             <div className="flex gap-4">
               <button onClick={() => setResetConfirmId(null)} className="flex-1 py-3 rounded-xl bg-white/5 text-slate-400 font-bold">Annuler</button>
               <button onClick={() => handleResetDevice(resetConfirmId)} className="flex-1 py-3 rounded-xl bg-amber-500 text-white font-bold">Confirmer</button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Delete Agent Confirmation */}
+      {deleteConfirmId && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <motion.div initial={{opacity:0, scale:0.95}} animate={{opacity:1, scale:1}} className="bg-[#1e293b] p-8 rounded-2xl border border-white/10 shadow-2xl max-w-sm w-full text-center">
+            <div className="w-16 h-16 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-4 text-red-500">
+              <Trash2 className="w-8 h-8" />
+            </div>
+            <h3 className="text-xl font-bold text-white mb-2">Supprimer l'agent ?</h3>
+            <p className="text-slate-400 text-sm mb-8">Cette action est irréversible et supprimera définitivement l'agent.</p>
+            <div className="flex gap-4">
+              <button onClick={() => setDeleteConfirmId(null)} className="flex-1 py-3 rounded-xl bg-white/5 text-slate-400 font-bold">Annuler</button>
+              <button onClick={() => handleDeleteAgent(deleteConfirmId)} className="flex-1 py-3 rounded-xl bg-red-500 text-white font-bold">Supprimer</button>
             </div>
           </motion.div>
         </div>
@@ -483,20 +583,31 @@ export default function AgentsModule() {
                 </div>
 
 
-                <div className="flex gap-3 pt-4">
+                <div className="flex flex-col sm:flex-row gap-3 pt-4">
                   <button 
                     type="button"
-                    onClick={() => setShowEditModal(false)}
-                    className="flex-1 px-6 py-3 rounded-xl text-slate-400 hover:bg-white/5 transition-all"
+                    onClick={() => setDeleteConfirmId(selectedAgent.uid)}
+                    className="sm:mr-auto px-5 py-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-500 font-semibold hover:bg-red-500/20 transition-all flex items-center justify-center gap-2"
                   >
-                    Annuler
+                    <Trash2 className="w-4 h-4" />
+                    Supprimer l'agent
                   </button>
-                  <button 
-                    type="submit"
-                    className="flex-1 bg-[#0ea5e9] hover:bg-[#0284c7] text-white font-semibold py-3 rounded-xl transition-all shadow-lg shadow-[#0ea5e9]/20"
-                  >
-                    Enregistrer les modifications
-                  </button>
+                  
+                  <div className="flex gap-3 w-full sm:sm:w-auto">
+                    <button 
+                      type="button"
+                      onClick={() => setShowEditModal(false)}
+                      className="flex-1 sm:flex-none px-6 py-3 rounded-xl text-slate-400 hover:bg-white/5 transition-all"
+                    >
+                      Annuler
+                    </button>
+                    <button 
+                      type="submit"
+                      className="flex-1 sm:flex-none bg-[#0ea5e9] hover:bg-[#0284c7] text-white font-semibold px-6 py-3 rounded-xl transition-all shadow-lg shadow-[#0ea5e9]/20"
+                    >
+                      Enregistrer les modifications
+                    </button>
+                  </div>
                 </div>
               </form>
             </motion.div>

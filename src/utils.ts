@@ -1,11 +1,11 @@
 import { jsPDF } from 'jspdf';
-import 'jspdf-autotable';
+import autoTable from 'jspdf-autotable';
 import * as XLSX from 'xlsx';
 
 export const exportToPDF = (title: string, columns: string[], data: any[][], filename: string) => {
   const doc = new jsPDF();
   doc.text(title, 14, 15);
-  (doc as any).autoTable({
+  autoTable(doc, {
     head: [columns],
     body: data,
     startY: 20,

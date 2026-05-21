@@ -86,7 +86,7 @@ export interface Agent {
 }
 
 export type VoucherStatus = 'created' | 'used' | 'expired' | 'valid_unused' | 'suspended';
-export type VoucherValidity = '1_month' | '2_months' | '1_year' | 'unlimited';
+export type VoucherValidity = '1_month' | '3_months' | '1_year' | 'unlimited';
 
 export interface Voucher {
   id: string;

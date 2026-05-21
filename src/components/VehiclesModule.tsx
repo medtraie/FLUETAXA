@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { db } from '../firebase';
-import { collection, onSnapshot, doc, setDoc, deleteDoc, query, orderBy, updateDoc } from 'firebase/firestore';
+import { collection, onSnapshot, doc, setDoc, deleteDoc, query, orderBy, updateDoc, writeBatch } from 'firebase/firestore';
 import { Vehicle, Brand, Agent, VehicleGroup, LimitPeriod, Frequency, FuelType } from '../types';
-import { Car, Plus, Trash2, Download, Upload, Search, X, Users, Layers, FileSpreadsheet, CheckSquare, Square, Check, Pause, Play } from 'lucide-react';
+import { Car, Plus, Trash2, Download, Upload, Search, X, Users, Layers, FileSpreadsheet, CheckSquare, Square, Check, Pause, Play, Edit2, ChevronRight, ChevronDown, Calendar } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { motion, AnimatePresence } from 'motion/react';
 import { handleFirestoreError, OperationType } from '../lib/firestoreUtils';
@@ -35,6 +35,28 @@ const getFallbackLogo = (brand: Brand) => {
     : 'https://www.svgrepo.com/show/439247/more.svg';
 };
 
+const parseExcelDate = (val: any): string => {
+  if (!val) return new Date().toISOString();
+  // If it's a number, it's likely an Excel serial date
+  if (typeof val === 'number') {
+    const date = new Date(Math.round((val - 25569) * 86400 * 1000));
+    return isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+  }
+  // If it's a string, try direct parsing
+  const str = String(val).trim();
+  // Check DD/MM/YYYY format
+  const dmYMatch = str.match(/^(\d{1,2})[\/\.-](\d{1,2})[\/\.-](\d{4})$/);
+  if (dmYMatch) {
+    const day = parseInt(dmYMatch[1], 10);
+    const month = parseInt(dmYMatch[2], 10) - 1;
+    const year = parseInt(dmYMatch[3], 10);
+    const date = new Date(year, month, day);
+    return isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+  }
+  const date = new Date(str);
+  return isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+};
+
 export default function VehiclesModule() {
   const [activeTab, setActiveTab] = useState<'vehicles' | 'groups'>('vehicles');
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
@@ -44,6 +66,17 @@ export default function VehiclesModule() {
   const [showGroupModal, setShowGroupModal] = useState(false);
   const [deleteConfirmChassis, setDeleteConfirmChassis] = useState<string | null>(null);
   const [deleteConfirmGroupId, setDeleteConfirmGroupId] = useState<string | null>(null);
+  
+  // Custom states for nested hierarchy lists and Excel imports
+  const [importReport, setImportReport] = useState<{ accepted: number; ignored: number } | null>(null);
+  const [expandedBrands, setExpandedBrands] = useState<Record<string, boolean>>({});
+  const [expandedDates, setExpandedDates] = useState<Record<string, boolean>>({});
+  
+  // Custom states for modal selections (Agents and Vehicles)
+  const [modalAgentSearch, setModalAgentSearch] = useState('');
+  const [modalVehicleSearch, setModalVehicleSearch] = useState('');
+  const [modalExpandedBrands, setModalExpandedBrands] = useState<Record<string, boolean>>({});
+  const [modalExpandedDates, setModalExpandedDates] = useState<Record<string, boolean>>({});
   
   // New Vehicle State
   const [newChassis, setNewChassis] = useState('');
@@ -62,6 +95,26 @@ export default function VehiclesModule() {
   const [isKmRequired, setIsKmRequired] = useState(false);
 
   const [searchTerm, setSearchTerm] = useState('');
+  const [groupSearchTerm, setGroupSearchTerm] = useState('');
+  const [groupStatusFilter, setGroupStatusFilter] = useState<'all' | 'active' | 'suspended'>('all');
+  const [editingGroup, setEditingGroup] = useState<VehicleGroup | null>(null);
+
+  useEffect(() => {
+    if (editingGroup) {
+      setGroupName(editingGroup.name);
+      setSelectedVehicles(editingGroup.vehicleIds || []);
+      setSelectedAgents(editingGroup.agentIds || []);
+      setFuelLimit(editingGroup.fuelLimit || 0);
+      setLimitPeriod(editingGroup.limitPeriod || 'month');
+      setIsCumulable(editingGroup.isCumulable || false);
+      setFrequency(editingGroup.frequency || 'once_per_month');
+      setSelectedSites(editingGroup.sites || []);
+      setSelectedFuelTypes(editingGroup.fuelTypes || []);
+      setIsKmRequired(editingGroup.isKmRequired || false);
+    } else {
+      resetGroupForm();
+    }
+  }, [editingGroup]);
 
   useEffect(() => {
     const vQuery = query(collection(db, 'vehicles'), orderBy('addedAt', 'desc'));
@@ -115,8 +168,8 @@ export default function VehiclesModule() {
       return;
     }
 
-    const groupId = crypto.randomUUID();
-    const newGroup: VehicleGroup = {
+    const groupId = editingGroup ? editingGroup.id : crypto.randomUUID();
+    const groupData: VehicleGroup = {
       id: groupId,
       name: groupName,
       vehicleIds: selectedVehicles,
@@ -128,16 +181,17 @@ export default function VehiclesModule() {
       sites: selectedSites,
       fuelTypes: selectedFuelTypes,
       isKmRequired,
-      status: 'active',
-      createdAt: new Date().toISOString()
+      status: editingGroup ? (editingGroup.status || 'active') : 'active',
+      createdAt: editingGroup ? editingGroup.createdAt : new Date().toISOString()
     };
 
     try {
-      await setDoc(doc(db, 'vehicle_groups', groupId), newGroup);
+      await setDoc(doc(db, 'vehicle_groups', groupId), groupData);
       resetGroupForm();
+      setEditingGroup(null);
       setShowGroupModal(false);
     } catch (error) {
-      console.error("Error adding group:", error);
+      console.error("Error saving group:", error);
     }
   };
 
@@ -152,6 +206,10 @@ export default function VehiclesModule() {
     setSelectedSites([]);
     setSelectedFuelTypes([]);
     setIsKmRequired(false);
+    setModalAgentSearch('');
+    setModalVehicleSearch('');
+    setModalExpandedBrands({});
+    setModalExpandedDates({});
   };
 
   const handleGroupVehicleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -190,29 +248,81 @@ export default function VehiclesModule() {
     }
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (evt) => {
-      const bstr = evt.target?.result;
-      const wb = XLSX.read(bstr, { type: 'binary' });
-      const wsname = wb.SheetNames[0];
-      const ws = wb.Sheets[wsname];
-      const data = XLSX.utils.sheet_to_json(ws) as any[];
+    reader.onload = async (evt) => {
+      try {
+        const bstr = evt.target?.result;
+        const wb = XLSX.read(bstr, { type: 'binary' });
+        const wsname = wb.SheetNames[0];
+        const ws = wb.Sheets[wsname];
+        const data = XLSX.utils.sheet_to_json(ws) as any[];
 
-      data.forEach(async (row) => {
-        const chassis = row['numéro de châssis'] || row['chassis'] || row['Chassis'];
-        const brand = row['marque'] || row['brand'] || 'Autre';
-        if (chassis) {
-          await setDoc(doc(db, 'vehicles', chassis.toString()), {
-            chassisNumber: chassis.toString(),
-            brand: BRANDS.includes(brand) ? brand : 'Autre',
-            addedAt: new Date().toISOString()
+        let accepted = 0;
+        let ignored = 0;
+        const processedChassis = new Set<string>();
+
+        // We create a check set from existing vehicles
+        const existingChassis = new Set(vehicles.map(v => v.chassisNumber.toUpperCase()));
+
+        // We write in chunks of 500
+        const batchChunks = [];
+        let currentBatch = writeBatch(db);
+        let currentCount = 0;
+
+        for (const row of data) {
+          const rawChassis = row['numéro de châssis'] || row['numéro de Châssis'] || row['numéro de chassis'] || row['Numéro de Châssis'] || row['Numéro de châssis'] || row['chassis'] || row['Chassis'] || row['CHASSIS'] || row['Numero de chassis'] || row['Numero de Chassis'];
+          const rawBrand = row['marque'] || row['Marque'] || row['brand'] || row['Brand'] || row['BRAND'];
+          const rawDate = row["date d'ajout"] || row["Date d'ajout"] || row['date'] || row['Date'] || row['addedAt'] || row['AddedAt'] || row["date d'ajoute"] || row["Date d'ajoute"];
+
+          if (!rawChassis) continue;
+
+          const chassisStr = String(rawChassis).trim().toUpperCase();
+          if (!chassisStr) continue;
+
+          // Check if it is a duplicate (either exists in db or already seen in sheet)
+          if (existingChassis.has(chassisStr) || processedChassis.has(chassisStr)) {
+            ignored++;
+            continue;
+          }
+
+          processedChassis.add(chassisStr);
+          const brandStr = String(rawBrand || 'Autre').trim();
+          const matchedBrand = BRANDS.find(b => b.toLowerCase() === brandStr.toLowerCase()) || 'Autre';
+          const finalDateStr = parseExcelDate(rawDate);
+
+          currentBatch.set(doc(db, 'vehicles', chassisStr), {
+            chassisNumber: chassisStr,
+            brand: matchedBrand,
+            addedAt: finalDateStr
           });
+          accepted++;
+          currentCount++;
+
+          if (currentCount === 450) { // Keep safe margin
+            batchChunks.push(currentBatch.commit());
+            currentBatch = writeBatch(db);
+            currentCount = 0;
+          }
         }
-      });
+
+        if (currentCount > 0) {
+          batchChunks.push(currentBatch.commit());
+        }
+
+        if (batchChunks.length > 0) {
+          await Promise.all(batchChunks);
+        }
+
+        setImportReport({ accepted, ignored });
+        // Reset file input
+        e.target.value = '';
+      } catch (error) {
+        console.error("Error importing vehicles:", error);
+      }
     };
     reader.readAsBinaryString(file);
   };
@@ -229,6 +339,126 @@ export default function VehiclesModule() {
     v.chassisNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
     v.brand.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  interface GroupedDate {
+    dateStr: string;
+    rawDate: string;
+    vehicles: Vehicle[];
+  }
+
+  interface GroupedBrand {
+    brand: Brand;
+    count: number;
+    latestDate: string;
+    dates: GroupedDate[];
+  }
+
+  const getGroupedVehicles = (vehiclesList: Vehicle[]): GroupedBrand[] => {
+    const brandGroups: Record<string, Vehicle[]> = {};
+    vehiclesList.forEach(v => {
+      const b = v.brand || 'Autre';
+      if (!brandGroups[b]) {
+        brandGroups[b] = [];
+      }
+      brandGroups[b].push(v);
+    });
+
+    const result: GroupedBrand[] = [];
+
+    Object.entries(brandGroups).forEach(([brandName, brandVehicles]) => {
+      const dateGroups: Record<string, { rawDate: string; list: Vehicle[] }> = {};
+      brandVehicles.forEach(v => {
+        const d = new Date(v.addedAt);
+        const formattedDate = isNaN(d.getTime()) ? 'Inconnue' : d.toLocaleDateString('fr-FR');
+        if (!dateGroups[formattedDate]) {
+          dateGroups[formattedDate] = {
+            rawDate: v.addedAt,
+            list: []
+          };
+        }
+        dateGroups[formattedDate].list.push(v);
+      });
+
+      const sortedDates: GroupedDate[] = Object.entries(dateGroups)
+        .map(([dateStr, info]) => ({
+          dateStr,
+          rawDate: info.rawDate,
+          vehicles: info.list.sort((a,b) => b.addedAt.localeCompare(a.addedAt))
+        }))
+        .sort((a, b) => b.rawDate.localeCompare(a.rawDate));
+
+      let latestDate = 'Inconnue';
+      if (sortedDates.length > 0) {
+        const maxRawDate = sortedDates[0].rawDate;
+        const d = new Date(maxRawDate);
+        latestDate = isNaN(d.getTime()) ? 'Inconnue' : d.toLocaleDateString('fr-FR');
+      }
+
+      result.push({
+        brand: brandName as Brand,
+        count: brandVehicles.length,
+        latestDate,
+        dates: sortedDates
+      });
+    });
+
+    return result.sort((a, b) => b.count - a.count || a.brand.localeCompare(b.brand));
+  };
+
+  const groupedBrands = getGroupedVehicles(filteredVehicles);
+
+  const toggleBrandExpand = (brand: string) => {
+    setExpandedBrands(prev => ({
+      ...prev,
+      [brand]: !prev[brand]
+    }));
+  };
+
+  const toggleDateExpand = (brand: string, dateStr: string) => {
+    const key = `${brand}_${dateStr}`;
+    setExpandedDates(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }));
+  };
+
+  const toggleModalBrandExpand = (brand: string) => {
+    setModalExpandedBrands(prev => ({
+      ...prev,
+      [brand]: !prev[brand]
+    }));
+  };
+
+  const toggleModalDateExpand = (brand: string, dateStr: string) => {
+    const key = `${brand}_${dateStr}`;
+    setModalExpandedDates(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }));
+  };
+
+  const sortedModalAgents = [...agents].sort((a, b) => {
+    const nameA = `${a.firstName || ''} ${a.lastName || ''}`.trim().toLowerCase();
+    const nameB = `${b.firstName || ''} ${b.lastName || ''}`.trim().toLowerCase();
+    return nameA.localeCompare(nameB, 'fr');
+  });
+
+  const filteredModalAgents = sortedModalAgents.filter(agent => {
+    const fullName = `${agent.firstName || ''} ${agent.lastName || ''}`.toLowerCase();
+    return fullName.includes(modalAgentSearch.toLowerCase());
+  });
+
+  const filteredModalVehicles = vehicles.filter(v => 
+    v.chassisNumber.toLowerCase().includes(modalVehicleSearch.toLowerCase())
+  );
+
+  const modalGroupedBrands = getGroupedVehicles(filteredModalVehicles);
+
+  const filteredGroups = groups.filter(group => {
+    const matchesSearch = group.name.toLowerCase().includes(groupSearchTerm.toLowerCase());
+    const matchesStatus = groupStatusFilter === 'all' || (group.status || 'active') === groupStatusFilter;
+    return matchesSearch && matchesStatus;
+  });
 
   return (
     <div className="space-y-6">
@@ -255,7 +485,7 @@ export default function VehiclesModule() {
             <input type="file" className="hidden" accept=".xlsx, .xls" onChange={handleFileUpload} />
           </label>
           <button 
-            onClick={() => setShowGroupModal(true)}
+            onClick={() => { setEditingGroup(null); resetGroupForm(); setShowGroupModal(true); }}
             className="flex-1 sm:flex-none bg-white/5 hover:bg-white/10 text-white px-4 py-3 rounded-xl transition-all flex items-center justify-center gap-2 border border-white/5"
           >
             <Layers className="w-4 h-4" />
@@ -284,145 +514,271 @@ export default function VehiclesModule() {
             />
           </div>
 
-          <div className="bg-[#1e293b] rounded-2xl border border-white/5 overflow-hidden">
-            <div className="overflow-x-auto max-h-[600px] overflow-y-auto custom-scrollbar">
-              <table className="w-full text-left relative">
-                <thead className="sticky top-0 z-10">
-                  <tr className="bg-[#1e293b] text-slate-400 text-xs uppercase tracking-wider shadow-sm border-b border-white/5">
-                    <th className="px-6 py-4 font-semibold">Marque</th>
-                    <th className="px-6 py-4 font-semibold">Numéro de Châssis</th>
-                    <th className="px-6 py-4 font-semibold">Date d'ajout</th>
-                    <th className="px-6 py-4 font-semibold text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {filteredVehicles.map((vehicle) => (
-                    <tr key={vehicle.chassisNumber} className="hover:bg-white/5 transition-colors group">
-                      <td className="px-6 py-4">
-                        <div className="flex items-center gap-2">
-                          <div className="w-8 h-8 flex items-center justify-center bg-white rounded p-1.5 shadow-sm">
-                            <img 
-                              src={BRAND_LOGOS[vehicle.brand as Brand]} 
-                              alt={vehicle.brand} 
-                              onError={(e) => {
-                                (e.target as HTMLImageElement).src = getFallbackLogo(vehicle.brand as Brand);
-                              }}
-                              className="max-w-full max-h-full object-contain"
-                              referrerPolicy="no-referrer"
-                            />
-                          </div>
-                          <span className="text-xs font-medium text-slate-300">
-                            {vehicle.brand}
+          {/* Grouped Accordion Hierarchy: Brand -> Date Added -> Chassis Number */}
+          <div className="space-y-4">
+            {groupedBrands.map((brandGroup) => {
+              const isBrandExpanded = !!expandedBrands[brandGroup.brand];
+              return (
+                <div 
+                  key={brandGroup.brand} 
+                  className="bg-[#1e293b] rounded-2xl border border-white/5 overflow-hidden transition-all duration-300"
+                >
+                  {/* Level 1: Brand Header (Marque, Nombre de chassis, Dernière date d'ajout) */}
+                  <div 
+                    onClick={() => toggleBrandExpand(brandGroup.brand)}
+                    className="flex items-center justify-between p-5 cursor-pointer hover:bg-white/5 transition-colors select-none group"
+                  >
+                    <div className="flex items-center gap-4">
+                      {/* Brand Logo */}
+                      <div className="w-12 h-12 flex items-center justify-center bg-white rounded-xl p-2 shadow-inner">
+                        <img 
+                          src={BRAND_LOGOS[brandGroup.brand] || BRAND_LOGOS['Autre']} 
+                          alt={brandGroup.brand} 
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = getFallbackLogo(brandGroup.brand);
+                          }}
+                          className="max-w-full max-h-full object-contain"
+                          referrerPolicy="no-referrer"
+                        />
+                      </div>
+                      
+                      <div>
+                        <h4 className="font-bold text-white text-base">
+                          {brandGroup.brand}
+                        </h4>
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mt-1 text-xs">
+                          <span className="text-slate-400 flex items-center gap-1.5 font-medium">
+                            <Car className="w-3.5 h-3.5 text-[#0ea5e9]" />
+                            {brandGroup.count} {brandGroup.count > 1 ? 'Châssis' : 'Châssis'}
+                          </span>
+                          <span className="text-slate-500 font-normal">
+                            Dernier ajout: {brandGroup.latestDate}
                           </span>
                         </div>
-                      </td>
-                      <td className="px-6 py-4 font-mono text-sm text-white">{vehicle.chassisNumber}</td>
-                      <td className="px-6 py-4 text-sm text-slate-500">
-                        {new Date(vehicle.addedAt).toLocaleDateString('fr-FR')}
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button 
-                          onClick={() => setDeleteConfirmChassis(vehicle.chassisNumber)}
-                          className="p-2 text-slate-500 hover:text-red-400 transition-colors"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                  {filteredVehicles.length === 0 && (
-                    <tr>
-                      <td colSpan={4} className="px-6 py-12 text-center text-slate-500 italic">
-                        Aucun véhicule trouvé
-                      </td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-lg bg-white/5 flex items-center justify-center text-slate-400 group-hover:text-white transition-colors">
+                        {isBrandExpanded ? <ChevronDown className="w-5 h-5" /> : <ChevronRight className="w-5 h-5" />}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Level 2: Dates of this Brand */}
+                  <AnimatePresence initial={false}>
+                    {isBrandExpanded && (
+                      <motion.div
+                        initial={{ height: 0, opacity: 0 }}
+                        animate={{ height: 'auto', opacity: 1 }}
+                        exit={{ height: 0, opacity: 0 }}
+                        transition={{ duration: 0.2 }}
+                        className="border-t border-white/5 bg-[#151f32]/40 divide-y divide-white/5"
+                      >
+                        {brandGroup.dates.map((dateGroup) => {
+                          const isDateExpanded = !!expandedDates[`${brandGroup.brand}_${dateGroup.dateStr}`];
+                          return (
+                            <div key={dateGroup.dateStr} className="pl-6">
+                              {/* Date Added Header */}
+                              <div 
+                                onClick={() => toggleDateExpand(brandGroup.brand, dateGroup.dateStr)}
+                                className="flex items-center justify-between py-4 pr-5 cursor-pointer hover:bg-white/5 transition-colors select-none"
+                              >
+                                <div className="flex items-center gap-3 text-sm text-slate-300">
+                                  <Calendar className="w-4 h-4 text-slate-500" />
+                                  <span className="font-semibold text-slate-200">
+                                    {dateGroup.dateStr}
+                                  </span>
+                                  <span className="text-xs bg-white/5 text-slate-400 px-2 py-0.5 rounded-full font-normal">
+                                    {dateGroup.vehicles.length} {dateGroup.vehicles.length > 1 ? 'véhicules' : 'véhicule'}
+                                  </span>
+                                </div>
+                                <div className="text-slate-500">
+                                  {isDateExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                </div>
+                              </div>
+
+                              {/* Level 3: list of Chassis added on this Date */}
+                              <AnimatePresence initial={false}>
+                                {isDateExpanded && (
+                                  <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: 'auto', opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    transition={{ duration: 0.2 }}
+                                    className="pl-6 pr-5 py-2 space-y-1.5"
+                                  >
+                                    {dateGroup.vehicles.map((vehicle) => (
+                                      <div 
+                                        key={vehicle.chassisNumber}
+                                        className="flex items-center justify-between p-3 bg-white/5 rounded-xl hover:bg-white/10 transition-colors"
+                                      >
+                                        <div className="flex items-center gap-2.5 font-mono text-white text-sm">
+                                          <div className="w-1.5 h-1.5 rounded-full bg-[#0ea5e9]" />
+                                          {vehicle.chassisNumber}
+                                        </div>
+                                        <button 
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setDeleteConfirmChassis(vehicle.chassisNumber);
+                                          }}
+                                          className="p-2 text-slate-500 hover:text-red-400 hover:bg-red-400/10 transition-all rounded-lg"
+                                          title="Supprimer"
+                                        >
+                                          <Trash2 className="w-4 h-4" />
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </div>
+                          );
+                        })}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              );
+            })}
+
+            {groupedBrands.length === 0 && (
+              <div className="py-12 text-center text-slate-500 italic bg-white/5 rounded-2xl border border-dashed border-white/10">
+                Aucun véhicule trouvé
+              </div>
+            )}
           </div>
         </>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {groups.map(group => (
-            <motion.div
-              layout
-              key={group.id}
-              className="bg-[#1e293b] rounded-2xl border border-white/5 p-6 space-y-4 hover:border-[#0ea5e9]/30 transition-all group"
-            >
-              <div className="flex justify-between items-start">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-[#0ea5e9]/10 flex items-center justify-center">
-                    <Layers className="w-5 h-5 text-[#0ea5e9]" />
+        <div className="space-y-6">
+          <div className="flex flex-col md:flex-row gap-4 items-center">
+            {/* Search Input for Groups */}
+            <div className="relative flex-1 w-full">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-500" />
+              <input 
+                type="text"
+                placeholder="Rechercher un groupe par nom..."
+                value={groupSearchTerm}
+                onChange={(e) => setGroupSearchTerm(e.target.value)}
+                className="w-full bg-[#1e293b] border border-white/5 rounded-xl pl-12 pr-4 py-3 text-white focus:outline-none focus:border-[#0ea5e9] transition-all"
+              />
+            </div>
+
+            {/* Status Filter for Groups */}
+            <div className="flex gap-1 p-1 bg-[#1e293b] rounded-xl border border-white/5 whitespace-nowrap overflow-x-auto custom-scrollbar w-full md:w-auto">
+              {([
+                { id: 'all', label: 'Tous les statuts' },
+                { id: 'active', label: 'Actifs' },
+                { id: 'suspended', label: 'Suspendus' }
+              ] as const).map(f => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setGroupStatusFilter(f.id)}
+                  className={`px-4 py-2 rounded-lg text-xs font-bold transition-all ${
+                    groupStatusFilter === f.id
+                      ? 'bg-[#0ea5e9] text-white shadow-md shadow-[#0ea5e9]/10'
+                      : 'text-slate-400 hover:text-white hover:bg-white/5'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+            {filteredGroups.map(group => (
+              <motion.div
+                layout
+                key={group.id}
+                className="bg-[#1e293b] rounded-2xl border border-white/5 p-6 space-y-4 hover:border-[#0ea5e9]/30 transition-all group"
+              >
+                <div className="flex justify-between items-start">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-[#0ea5e9]/10 flex items-center justify-center">
+                      <Layers className="w-5 h-5 text-[#0ea5e9]" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-white">{group.name}</h4>
+                      <div className="flex items-center gap-2">
+                        <p className="text-xs text-slate-500">{new Date(group.createdAt).toLocaleDateString()}</p>
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase ${group.status === 'suspended' ? 'bg-amber-500/10 text-amber-500' : 'bg-emerald-500/10 text-emerald-500'}`}>
+                          {group.status === 'suspended' ? 'Suspendu' : 'Actif'}
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <h4 className="font-bold text-white">{group.name}</h4>
-                    <div className="flex items-center gap-2">
-                      <p className="text-xs text-slate-500">{new Date(group.createdAt).toLocaleDateString()}</p>
-                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold uppercase ${group.status === 'suspended' ? 'bg-amber-500/10 text-amber-500' : 'bg-emerald-500/10 text-emerald-500'}`}>
-                        {group.status === 'suspended' ? 'Suspendu' : 'Actif'}
-                      </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => toggleGroupStatus(group.id, group.status || 'active')}
+                      className={`p-2 transition-all rounded-lg ${group.status === 'suspended' ? 'text-emerald-400 hover:bg-emerald-400/10' : 'text-amber-400 hover:bg-amber-400/10'}`}
+                      title={group.status === 'suspended' ? 'Activer' : 'Suspendre'}
+                    >
+                      {group.status === 'suspended' ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setEditingGroup(group);
+                        setShowGroupModal(true);
+                      }}
+                      className="p-2 text-slate-550 hover:text-[#0ea5e9] transition-all rounded-lg hover:bg-[#0ea5e9]/10"
+                      title="Modifier"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => setDeleteConfirmGroupId(group.id)}
+                      className="p-2 text-slate-500 hover:text-red-400 md:opacity-0 md:group-hover:opacity-100 transition-all rounded-lg hover:bg-red-400/10"
+                      title="Supprimer"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+                    <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Volume</p>
+                    <p className="text-sm text-white font-mono">{group.fuelLimit}L / {group.limitPeriod === 'day' ? 'Jour' : group.limitPeriod === 'week' ? 'Semaine' : 'Mois'}</p>
+                  </div>
+                  <div className="bg-white/5 p-3 rounded-xl border border-white/5">
+                    <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Passes</p>
+                    <p className="text-sm text-white font-medium">
+                      {group.frequency === 'once' ? 'Unique' : group.frequency.replace('once_per_', '').replace('day','Jour').replace('week','Semaine').replace('month','Mois')}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-3">
+                  <div className="flex flex-wrap gap-1.5">
+                    <div className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${group.isCumulable ? 'bg-green-500/10 text-green-500' : 'bg-slate-500/10 text-slate-500'}`}>
+                      {group.isCumulable ? 'Cumulable' : 'Non cumulable'}
+                    </div>
+                    <div className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${group.isKmRequired ? 'bg-orange-500/10 text-orange-500' : 'bg-white/5 text-slate-600'}`}>
+                      KM {group.isKmRequired ? 'Obligatoire' : 'Facultatif'}
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center gap-4 text-xs text-slate-400">
+                    <div className="flex items-center gap-1.5">
+                      <Car className="w-3 h-3" />
+                      <span>{group.vehicleIds ? group.vehicleIds.length : 0} Voitures</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Users className="w-3 h-3" />
+                      <span>{group.agentIds ? group.agentIds.length : 0} Agents</span>
                     </div>
                   </div>
                 </div>
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={() => toggleGroupStatus(group.id, group.status || 'active')}
-                    className={`p-2 transition-all rounded-lg ${group.status === 'suspended' ? 'text-emerald-400 hover:bg-emerald-400/10' : 'text-amber-400 hover:bg-amber-400/10'}`}
-                    title={group.status === 'suspended' ? 'Activer' : 'Suspendre'}
-                  >
-                    {group.status === 'suspended' ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
-                  </button>
-                  <button
-                    onClick={() => setDeleteConfirmGroupId(group.id)}
-                    className="p-2 text-slate-600 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-all rounded-lg hover:bg-red-400/10"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                </div>
+              </motion.div>
+            ))}
+            {filteredGroups.length === 0 && (
+              <div className="col-span-full py-12 text-center text-slate-500 italic bg-white/5 rounded-2xl border border-dashed border-white/10">
+                Aucun groupe trouvé
               </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                <div className="bg-white/5 p-3 rounded-xl border border-white/5">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Volume</p>
-                  <p className="text-sm text-white font-mono">{group.fuelLimit}L / {group.limitPeriod === 'day' ? 'Jour' : group.limitPeriod === 'week' ? 'Semaine' : 'Mois'}</p>
-                </div>
-                <div className="bg-white/5 p-3 rounded-xl border border-white/5">
-                  <p className="text-[10px] text-slate-500 uppercase font-bold mb-1">Passes</p>
-                  <p className="text-sm text-white">
-                    {group.frequency === 'once' ? 'Unique' : group.frequency.replace('once_per_', '').replace('day','Jour').replace('week','Semaine').replace('month','Mois')}
-                  </p>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <div className="flex flex-wrap gap-1.5">
-                  <div className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${group.isCumulable ? 'bg-green-500/10 text-green-500' : 'bg-slate-500/10 text-slate-500'}`}>
-                    {group.isCumulable ? 'Cumulable' : 'Non cumulable'}
-                  </div>
-                  <div className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase tracking-wider ${group.isKmRequired ? 'bg-orange-500/10 text-orange-500' : 'bg-white/5 text-slate-600'}`}>
-                    KM {group.isKmRequired ? 'Obligatoire' : 'Facultatif'}
-                  </div>
-                </div>
-                
-                <div className="flex items-center gap-4 text-xs text-slate-400">
-                  <div className="flex items-center gap-1.5">
-                    <Car className="w-3 h-3" />
-                    <span>{group.vehicleIds.length} Voitures</span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <Users className="w-3 h-3" />
-                    <span>{group.agentIds.length} Agents</span>
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          ))}
-          {groups.length === 0 && (
-            <div className="col-span-full py-12 text-center text-slate-500 italic bg-white/5 rounded-2xl border border-dashed border-white/10">
-              Aucun groupe créé
-            </div>
-          )}
+            )}
+          </div>
         </div>
       )}
 
@@ -468,12 +824,47 @@ export default function VehiclesModule() {
         </div>
       )}
 
+      {/* Excel Import Summary Report Dialog */}
+      {importReport && (
+        <div className="fixed inset-0 z-[130] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <motion.div 
+            initial={{ opacity: 0, scale: 0.95 }} 
+            animate={{ opacity: 1, scale: 1 }} 
+            className="bg-[#1e293b] p-8 rounded-2xl border border-white/10 shadow-2xl max-w-md w-full text-center"
+          >
+            <div className="w-16 h-16 bg-[#0ea5e9]/20 rounded-full flex items-center justify-center mx-auto mb-4 text-[#0ea5e9]">
+              <FileSpreadsheet className="w-8 h-8" />
+            </div>
+            <h3 className="text-xl font-bold text-white mb-2">Rapport d'importation</h3>
+            <p className="text-slate-400 text-sm mb-6">L'importation de votre liste s'est déroulée avec succès.</p>
+            
+            <div className="grid grid-cols-2 gap-4 mb-6">
+              <div className="bg-emerald-500/10 border border-emerald-500/25 p-4 rounded-xl text-center">
+                <p className="text-2xl font-black text-emerald-400">{importReport.accepted}</p>
+                <p className="text-xs text-slate-400 mt-1">Acceptés</p>
+              </div>
+              <div className="bg-amber-500/10 border border-amber-500/25 p-4 rounded-xl text-center">
+                <p className="text-2xl font-black text-amber-400">{importReport.ignored}</p>
+                <p className="text-xs text-slate-400 mt-1 font-medium">Doublons ignorés</p>
+              </div>
+            </div>
+
+            <button 
+              onClick={() => setImportReport(null)} 
+              className="w-full py-3.5 rounded-xl bg-[#0ea5e9] hover:bg-[#0284c7] text-white font-bold transition-all"
+            >
+              Fermer
+            </button>
+          </motion.div>
+        </div>
+      )}
+
       {/* Add Group Modal */}
       <AnimatePresence>
         {showGroupModal && (
           <div 
             className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto"
-            onClick={() => setShowGroupModal(false)}
+            onClick={() => { setShowGroupModal(false); setEditingGroup(null); resetGroupForm(); }}
           >
             <motion.div 
               initial={{ opacity: 0, scale: 0.9 }}
@@ -488,13 +879,17 @@ export default function VehiclesModule() {
                     <Layers className="w-6 h-6 text-[#0ea5e9]" />
                   </div>
                   <div>
-                    <h3 className="text-2xl font-bold text-white">Nouveau Groupe</h3>
-                    <p className="text-sm text-slate-400">Gérer une flotte de véhicules et agents</p>
+                    <h3 className="text-2xl font-bold text-white">
+                      {editingGroup ? 'Modifier le Groupe' : 'Nouveau Groupe'}
+                    </h3>
+                    <p className="text-sm text-slate-400">
+                      {editingGroup ? 'Modifier les détails et affectations du groupe' : 'Gérer une flotte de véhicules et agents'}
+                    </p>
                   </div>
                 </div>
                 <button 
                   type="button"
-                  onClick={() => setShowGroupModal(false)} 
+                  onClick={() => { setShowGroupModal(false); setEditingGroup(null); resetGroupForm(); }} 
                   className="w-10 h-10 flex items-center justify-center bg-white/5 hover:bg-white/10 rounded-xl text-slate-400 transition-colors"
                   title="Fermer"
                 >
@@ -624,29 +1019,58 @@ export default function VehiclesModule() {
 
                   {/* Right Column: Selections */}
                   <div className="space-y-6">
-                    <div className="space-y-4 bg-white/5 p-6 rounded-2xl border border-white/5 h-[280px] flex flex-col">
+                    <div className="space-y-4 bg-white/5 p-6 rounded-2xl border border-white/5 h-[340px] flex flex-col">
                       <div className="flex justify-between items-center">
                         <h4 className="text-sm font-semibold text-white uppercase tracking-wider flex items-center gap-2">
                           <Users className="w-4 h-4" /> Agents
                         </h4>
-                        <span className="text-xs text-[#0ea5e9] bg-[#0ea5e9]/10 px-2 py-0.5 rounded-full">{selectedAgents.length} sélectionnés</span>
+                        <span className="text-xs text-[#0ea5e9] bg-[#0ea5e9]/10 px-2.5 py-0.5 rounded-full font-medium">{selectedAgents.length} sélectionnés</span>
                       </div>
+
+                      {/* Agents Quick Search Input */}
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                          <Search className="w-4 h-4 text-slate-500" />
+                        </span>
+                        <input
+                          type="text"
+                          placeholder="Rechercher un agent..."
+                          value={modalAgentSearch}
+                          onChange={(e) => setModalAgentSearch(e.target.value)}
+                          className="w-full pl-9 pr-8 py-2 bg-[#0f172a]/80 border border-white/10 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#0ea5e9] transition-all"
+                        />
+                        {modalAgentSearch && (
+                          <button
+                            type="button"
+                            onClick={() => setModalAgentSearch('')}
+                            className="absolute inset-y-0 right-0 flex items-center pr-3 text-slate-500 hover:text-white"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+
                       <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
-                        {agents.map(agent => (
+                        {filteredModalAgents.map(agent => (
                           <button
                             key={agent.uid}
                             type="button"
                             onClick={() => toggleSelection(selectedAgents, setSelectedAgents, agent.uid)}
-                            className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl border transition-all text-sm ${selectedAgents.includes(agent.uid) ? 'bg-[#0ea5e9]/20 border-[#0ea5e9] text-[#0ea5e9]' : 'bg-[#0f172a] border-white/5 text-slate-400 italic font-light'}`}
+                            className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl border transition-all text-sm ${selectedAgents.includes(agent.uid) ? 'bg-[#0ea5e9]/20 border-[#0ea5e9] text-[#0ea5e9]' : 'bg-[#0f172a] border-white/5 text-slate-400 hover:bg-white/5 font-normal'}`}
                           >
                             <span>{agent.firstName} {agent.lastName}</span>
                             {selectedAgents.includes(agent.uid) ? <CheckSquare className="w-4 h-4" /> : <Plus className="w-3 h-3 opacity-30" />}
                           </button>
                         ))}
+                        {filteredModalAgents.length === 0 && (
+                          <div className="py-8 text-center text-slate-500 text-xs italic bg-[#0f172a]/20 rounded-xl border border-dashed border-white/5">
+                            Aucun agent trouvé
+                          </div>
+                        )}
                       </div>
                     </div>
 
-                    <div className="space-y-4 bg-white/5 p-6 rounded-2xl border border-white/5 h-[340px] flex flex-col">
+                    <div className="space-y-4 bg-white/5 p-6 rounded-2xl border border-white/5 h-[450px] flex flex-col">
                       <div className="flex justify-between items-center">
                         <h4 className="text-sm font-semibold text-white uppercase tracking-wider flex items-center gap-2">
                           <Car className="w-4 h-4" /> Voitures
@@ -656,21 +1080,178 @@ export default function VehiclesModule() {
                             <FileSpreadsheet className="w-4 h-4" />
                             <input type="file" className="hidden" accept=".xlsx, .xls" onChange={handleGroupVehicleImport} />
                           </label>
-                          <span className="text-xs text-[#0ea5e9] bg-[#0ea5e9]/10 px-2 py-0.5 rounded-full">{selectedVehicles.length} sélectionnées</span>
+                          <span className="text-xs text-[#0ea5e9] bg-[#0ea5e9]/10 px-2.5 py-0.5 rounded-full font-medium">{selectedVehicles.length} sélectionnées</span>
                         </div>
                       </div>
-                      <div className="flex-1 overflow-y-auto space-y-2 pr-2 custom-scrollbar">
-                        {vehicles.map(vehicle => (
+
+                      {/* Voitures Quick Search Input */}
+                      <div className="relative">
+                        <span className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
+                          <Search className="w-4 h-4 text-slate-500" />
+                        </span>
+                        <input
+                          type="text"
+                          placeholder="Rechercher par châssis..."
+                          value={modalVehicleSearch}
+                          onChange={(e) => setModalVehicleSearch(e.target.value)}
+                          className="w-full pl-9 pr-8 py-2 bg-[#0f172a]/80 border border-white/10 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#0ea5e9] transition-all"
+                        />
+                        {modalVehicleSearch && (
                           <button
-                            key={vehicle.chassisNumber}
                             type="button"
-                            onClick={() => toggleSelection(selectedVehicles, setSelectedVehicles, vehicle.chassisNumber)}
-                            className={`w-full flex items-center justify-between px-4 py-2.5 rounded-xl border transition-all text-sm ${selectedVehicles.includes(vehicle.chassisNumber) ? 'bg-[#0ea5e9]/20 border-[#0ea5e9] text-[#0ea5e9]' : 'bg-[#0f172a] border-white/5 text-slate-400 font-mono'}`}
+                            onClick={() => setModalVehicleSearch('')}
+                            className="absolute inset-y-0 right-0 flex items-center pr-3 text-slate-500 hover:text-white"
                           >
-                            <span>{vehicle.chassisNumber} ({vehicle.brand})</span>
-                            {selectedVehicles.includes(vehicle.chassisNumber) ? <CheckSquare className="w-4 h-4" /> : <Plus className="w-3 h-3 opacity-30" />}
+                            <X className="w-3.5 h-3.5" />
                           </button>
-                        ))}
+                        )}
+                      </div>
+
+                      <div className="flex-1 overflow-y-auto space-y-3 pr-2 custom-scrollbar">
+                        {modalGroupedBrands.map((brandGroup) => {
+                          const isBrandExpanded = !!modalExpandedBrands[brandGroup.brand];
+                          return (
+                            <div 
+                              key={brandGroup.brand} 
+                              className="bg-[#0f172a]/45 rounded-xl border border-white/5 overflow-hidden transition-all duration-200"
+                            >
+                              {/* Level 1: Marque (Header) */}
+                              <div 
+                                onClick={() => toggleModalBrandExpand(brandGroup.brand)}
+                                className="flex items-center justify-between p-3.5 cursor-pointer hover:bg-white/5 transition-colors select-none group"
+                              >
+                                <div className="flex items-center gap-3">
+                                  {/* Brand Logo */}
+                                  <div className="w-9 h-9 flex items-center justify-center bg-white rounded-lg p-1.5 shadow-sm">
+                                    <img 
+                                      src={BRAND_LOGOS[brandGroup.brand] || BRAND_LOGOS['Autre']} 
+                                      alt={brandGroup.brand} 
+                                      onError={(e) => {
+                                        (e.target as HTMLImageElement).src = getFallbackLogo(brandGroup.brand);
+                                      }}
+                                      className="max-w-full max-h-full object-contain"
+                                      referrerPolicy="no-referrer"
+                                    />
+                                  </div>
+                                  
+                                  <div>
+                                    <h5 className="font-bold text-white text-xs">
+                                      {brandGroup.brand}
+                                    </h5>
+                                    <div className="flex items-center gap-x-2 text-[10px] text-slate-400 mt-0.5">
+                                      <span className="flex items-center gap-1 font-medium text-[#0ea5e9]">
+                                        <Car className="w-3 h-3" />
+                                        {brandGroup.count} Chassis
+                                      </span>
+                                      <span className="text-slate-500">
+                                        Max: {brandGroup.latestDate}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="text-slate-400 group-hover:text-white transition-colors">
+                                  {isBrandExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                </div>
+                              </div>
+
+                              {/* Level 2: Dates of this Brand */}
+                              <AnimatePresence initial={false}>
+                                {isBrandExpanded && (
+                                  <motion.div
+                                    initial={{ height: 0, opacity: 0 }}
+                                    animate={{ height: 'auto', opacity: 1 }}
+                                    exit={{ height: 0, opacity: 0 }}
+                                    transition={{ duration: 0.15 }}
+                                    className="border-t border-white/5 bg-[#151f32]/25 divide-y divide-white/5"
+                                  >
+                                    {brandGroup.dates.map((dateGroup) => {
+                                      const isDateExpanded = !!modalExpandedDates[`${brandGroup.brand}_${dateGroup.dateStr}`];
+                                      return (
+                                        <div key={dateGroup.dateStr} className="pl-3">
+                                          {/* Date Added Header */}
+                                          <div 
+                                            onClick={() => toggleModalDateExpand(brandGroup.brand, dateGroup.dateStr)}
+                                            className="flex items-center justify-between py-2.5 pr-3 cursor-pointer hover:bg-white/5 transition-colors select-none"
+                                          >
+                                            <div className="flex items-center gap-2 text-xs">
+                                              <Calendar className="w-3.5 h-3.5 text-slate-500" />
+                                              <span className="font-semibold text-slate-300">
+                                                {dateGroup.dateStr}
+                                              </span>
+                                              <span className="text-[9px] bg-white/5 text-slate-400 px-1.5 py-0.2 rounded-full font-normal">
+                                                {dateGroup.vehicles.length}
+                                              </span>
+                                            </div>
+                                            <div className="text-slate-500">
+                                              {isDateExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                                            </div>
+                                          </div>
+
+                                          {/* Level 3: list of Chassis added on this Date */}
+                                          <AnimatePresence initial={false}>
+                                            {isDateExpanded && (
+                                              <motion.div
+                                                initial={{ height: 0, opacity: 0 }}
+                                                animate={{ height: 'auto', opacity: 1 }}
+                                                exit={{ height: 0, opacity: 0 }}
+                                                transition={{ duration: 0.15 }}
+                                                className="pl-3 pr-3 py-1.5 space-y-1.5"
+                                              >
+                                                {dateGroup.vehicles.map((vehicle) => {
+                                                  const isSelected = selectedVehicles.includes(vehicle.chassisNumber);
+                                                  return (
+                                                    <div 
+                                                      key={vehicle.chassisNumber}
+                                                      onClick={() => toggleSelection(selectedVehicles, setSelectedVehicles, vehicle.chassisNumber)}
+                                                      className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-all border ${isSelected ? 'bg-[#0ea5e9]/10 border-[#0ea5e9]/30 text-[#0ea5e9]' : 'bg-[#0f172a]/60 border-transparent text-slate-300 hover:bg-white/5'}`}
+                                                    >
+                                                      <div className="flex items-center gap-2 font-mono text-xs">
+                                                        <button
+                                                          type="button"
+                                                          className={`w-4 h-4 rounded flex items-center justify-center transition-colors ${isSelected ? 'bg-[#0ea5e9] text-white' : 'bg-white/10 text-transparent hover:bg-white/20'}`}
+                                                        >
+                                                          {isSelected ? <CheckSquare className="w-3 h-3 animate-pulse" /> : <Square className="w-3 h-3 text-slate-500" />}
+                                                        </button>
+                                                        <span className={isSelected ? 'font-bold text-white' : 'font-medium'}>
+                                                          {vehicle.chassisNumber}
+                                                        </span>
+                                                      </div>
+                                                      
+                                                      {isSelected && (
+                                                        <button 
+                                                          type="button"
+                                                          onClick={(e) => {
+                                                            e.stopPropagation();
+                                                            toggleSelection(selectedVehicles, setSelectedVehicles, vehicle.chassisNumber);
+                                                          }}
+                                                          className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-400/10 transition-all rounded-md"
+                                                          title="Désélectionner"
+                                                        >
+                                                          <Trash2 className="w-3.5 h-3.5" />
+                                                        </button>
+                                                      )}
+                                                    </div>
+                                                  );
+                                                })}
+                                              </motion.div>
+                                            )}
+                                          </AnimatePresence>
+                                        </div>
+                                      );
+                                    })}
+                                  </motion.div>
+                                )}
+                              </AnimatePresence>
+                            </div>
+                          );
+                        })}
+
+                        {modalGroupedBrands.length === 0 && (
+                          <div className="py-8 text-center text-slate-500 text-xs italic bg-[#0f172a]/20 rounded-xl border border-dashed border-white/5">
+                            Aucun véhicule trouvé
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -679,7 +1260,7 @@ export default function VehiclesModule() {
                 <div className="flex gap-4 pt-4 border-t border-white/10">
                   <button 
                     type="button"
-                    onClick={() => setShowGroupModal(false)}
+                    onClick={() => { setShowGroupModal(false); setEditingGroup(null); resetGroupForm(); }}
                     className="flex-1 px-8 py-4 rounded-xl text-slate-400 hover:bg-white/5 transition-all font-semibold"
                   >
                     Annuler
@@ -689,7 +1270,7 @@ export default function VehiclesModule() {
                     className="flex-[2] bg-[#0ea5e9] hover:bg-[#0284c7] text-white font-bold py-4 rounded-xl transition-all shadow-lg shadow-[#0ea5e9]/20 flex items-center justify-center gap-3"
                   >
                     <Check className="w-5 h-5" />
-                    Créer le Groupe & Affecter
+                    {editingGroup ? 'Enregistrer les modifications' : 'Créer le Groupe & Affecter'}
                   </button>
                 </div>
               </form>
